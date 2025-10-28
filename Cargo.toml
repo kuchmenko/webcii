@@ -1,0 +1,11 @@
+[package]
+name = "webcii"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.48.0", features = ["full"] }
+nokhwa = { version = "0.10.9", features = ["input-native", "output-wgpu"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+image = "0.25.8"
+rayon = "1.11"
