@@ -28,6 +28,7 @@ const ASCII_CHARS: [char; 70] = [
     'f', 't', '/', '\\', '|', '(', ')', '1', '{', '}', '[', ']', '?', '-', '_', '+', '~', '<', '>',
     'i', '!', 'l', 'I', ';', ':', ',', '"', '^', '`', '\'', '.', ' ',
 ];
+const TARGET_FRAME_TIME_MS: u128 = 16;
 
 enum SobelEdge {
     None,
@@ -196,6 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut prev_frame: Option<Vec<u8>> = None;
     let mut frame_buffer = String::with_capacity(2_000_000);
+    let mut should_skip_next_frame = false;
+    let mut prev_rows: Option<Vec<String>> = None;
 
     let color_lookup: Vec<String> = (0..4096)
         .map(|i| {
@@ -231,6 +234,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if let Some(frame) = frame_rx.borrow().as_ref() {
+                    let frame_start = Instant::now();
+
+                    if should_skip_next_frame {
+                        prev_frame = Some(frame.pixels.clone());
+                        should_skip_next_frame = false;
+                        continue;
+                    }
+
                     frame_buffer.clear();
 
                     let width = frame.width;
@@ -293,19 +304,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .collect();
 
-                    frame_buffer.clear();
-                    for (i, row) in rows.iter().enumerate() {
-                        frame_buffer.push_str(row);
-                        if i < term_height - 1 {
-                            frame_buffer.push_str("\r\n");
+                    // frame_buffer.clear();
+                    // for (i, row) in rows.iter().enumerate() {
+                    //     frame_buffer.push_str(row);
+                    //     if i < term_height - 1 {
+                    //         frame_buffer.push_str("\r\n");
+                    //     }
+                    // }
+
+                    if let Some(prev) = &prev_rows {
+                        for (row_idx, current_row) in rows.iter().enumerate() {
+                            if row_idx >= prev.len() || current_row != &prev[row_idx] {
+                                queue!(stdout, cursor::MoveTo(0, row_idx as u16))?;
+                                write!(stdout, "{}", current_row)?;
+                            }
                         }
+                    } else {
+                        queue!(stdout, cursor::MoveTo(0, 0))?;
+
+                        for (i, row) in rows.iter().enumerate() {
+                            write!(stdout, "{}", row)?;
+
+                            if i < term_height - 1 {
+                                write!(stdout, "\r\n")?;
+                            }
+                        }
+
                     }
 
-                    queue!(stdout, cursor::MoveTo(0, 0))?;
-                    write!(stdout, "{}", frame_buffer)?;
+
                     stdout.flush()?;
 
                     prev_frame = Some(current_pixels.to_vec());
+
+                    let frame_duration = frame_start.elapsed();
+                    should_skip_next_frame = frame_duration.as_millis() > TARGET_FRAME_TIME_MS;
+
                 }
             },
                 Ok(_) = quit_rx.changed() => {
