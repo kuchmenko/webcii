@@ -22,11 +22,6 @@ const SOBEL_SAMPLE_RATE_MEDIUM_RES: usize = 10; // sample every 10th pixel
 const SOBEL_SAMPLE_RATE_LOW_RES: usize = 1; // sample every pixel
 const SOBEL_THRESHOLD: f32 = 30.0; // gradient magnitude threshold
 
-const COLOR_BITS_PER_CHANNEL: u8 = 4;
-const COLOR_QUANTIZATION_DIVISOR: u8 = 1 << (8 - COLOR_BITS_PER_CHANNEL);
-const COLOR_INDEX_RED_SHIFT: u32 = 8;
-const COLOR_INDEX_GREEN_SHIFT: u32 = 4;
-
 const TARGET_FRAME_TIME_MS: u128 = 16; // ~60 FPS
 const INITIAL_BUFFER_CAPACITY: usize = 2_000_000; // 2MB for ANSI codes
 const ESTIMATED_BYTES_PER_CELL: usize = 25; // ANSI color codes + char
@@ -45,6 +40,11 @@ struct SobelConfig {
 }
 
 pub struct Renderer {
+    bits_per_channel: u8,
+    quantization_divisor: u8,
+    red_shift: u32,
+    green_shift: u32,
+
     color_lookup: Vec<String>,
     term_width: usize,
     term_height: usize,
@@ -60,11 +60,30 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(bits_per_channel: u8) -> io::Result<Self> {
+        if bits_per_channel == 0 || bits_per_channel > 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bits_per_channel must be 1-8, got {}", bits_per_channel),
+            ));
+        }
+
+        let quantization_divisor = 1 << (8 - bits_per_channel);
+        let red_shift = (bits_per_channel * 2) as u32;
+        let green_shift = bits_per_channel as u32;
+
+        let color_lookup = Self::generate_color_lookup(bits_per_channel);
+
         let (cols, rows) = terminal::size()?;
         let term_width = cols as usize;
         let term_height = rows as usize;
+
         Ok(Renderer {
-            color_lookup: Self::generate_color_lookup(bits_per_channel),
+            bits_per_channel,
+            quantization_divisor,
+            red_shift,
+            green_shift,
+
+            color_lookup,
             term_width,
             term_height,
 
@@ -310,11 +329,11 @@ impl Renderer {
     }
 
     fn calculate_color_index(&self, r: u8, g: u8, b: u8) -> usize {
-        let r_idx = (r / COLOR_QUANTIZATION_DIVISOR) as usize;
-        let g_idx = (g / COLOR_QUANTIZATION_DIVISOR) as usize;
-        let b_idx = (b / COLOR_QUANTIZATION_DIVISOR) as usize;
+        let r_idx = (r / self.quantization_divisor) as usize;
+        let g_idx = (g / self.quantization_divisor) as usize;
+        let b_idx = (b / self.quantization_divisor) as usize;
 
-        (r_idx << COLOR_INDEX_RED_SHIFT) | (g_idx << COLOR_INDEX_GREEN_SHIFT) | b_idx
+        (r_idx << self.red_shift) | (g_idx << self.green_shift) | b_idx
     }
 
     fn generate_color_lookup(bits_per_channel: u8) -> Vec<String> {
@@ -322,9 +341,13 @@ impl Renderer {
         let total_colors = colors_per_channel.pow(3); // TODO: why pow 3? what is 3;
         let channel_mask = colors_per_channel - 1;
 
-        let multiplier = 255 / channel_mask;
+        let multiplier = if colors_per_channel == 256 {
+            1
+        } else {
+            255 / channel_mask
+        };
 
-        let color_lookup: Vec<String> = (0..total_colors)
+        (0..total_colors)
             .map(|i| {
                 let r_shift = bits_per_channel * 2;
 
@@ -333,9 +356,7 @@ impl Renderer {
                 let b = (i & channel_mask) * multiplier;
                 format!("\x1b[38;2;{};{};{}m", r, g, b)
             })
-            .collect();
-
-        color_lookup
+            .collect()
     }
 
     fn pixel_to_ascii(r: u8, g: u8, b: u8) -> char {
