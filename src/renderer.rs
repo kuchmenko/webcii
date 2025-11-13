@@ -4,6 +4,7 @@ use std::{
 };
 
 use crossterm::{cursor, queue, terminal};
+use dashmap::DashMap;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::capture::Frame;
@@ -45,7 +46,7 @@ pub struct Renderer {
     red_shift: u32,
     green_shift: u32,
 
-    color_lookup: Vec<String>,
+    color_cache: DashMap<usize, String>,
     term_width: usize,
     term_height: usize,
 
@@ -54,6 +55,7 @@ pub struct Renderer {
     should_skip_next_frame: bool,
 
     frame_buffer: String,
+    final_buffer: String,
 
     stdout: std::io::Stdout,
 }
@@ -71,8 +73,6 @@ impl Renderer {
         let red_shift = (bits_per_channel * 2) as u32;
         let green_shift = bits_per_channel as u32;
 
-        let color_lookup = Self::generate_color_lookup(bits_per_channel);
-
         let (cols, rows) = terminal::size()?;
         let term_width = cols as usize;
         let term_height = rows as usize;
@@ -83,7 +83,7 @@ impl Renderer {
             red_shift,
             green_shift,
 
-            color_lookup,
+            color_cache: DashMap::with_capacity(150_000),
             term_width,
             term_height,
 
@@ -92,6 +92,7 @@ impl Renderer {
             should_skip_next_frame: false,
 
             frame_buffer: String::with_capacity(INITIAL_BUFFER_CAPACITY),
+            final_buffer: String::with_capacity(INITIAL_BUFFER_CAPACITY),
 
             stdout: io::stdout(),
         })
@@ -133,10 +134,11 @@ impl Renderer {
         let mut last_color_idx = usize::MAX;
 
         for term_x in 0..self.term_width {
-            let (ascii_char, color_idx) = self.render_pixel(term_x, term_y, frame, &sobel_config);
+            let (ascii_char, color_idx, (r, g, b)) =
+                self.render_pixel(term_x, term_y, frame, &sobel_config);
 
             if color_idx != last_color_idx {
-                row_buffer.push_str(&self.color_lookup[color_idx]);
+                row_buffer.push_str(&self.get_color_code(color_idx, r, g, b));
                 last_color_idx = color_idx;
             }
             row_buffer.push(ascii_char);
@@ -151,7 +153,7 @@ impl Renderer {
         term_y: usize,
         frame: &Frame,
         sobel_config: &SobelConfig,
-    ) -> (char, usize) {
+    ) -> (char, usize, (u8, u8, u8)) {
         let (x, y) = self.calculate_sample_position(term_x, term_y, frame.width, frame.height);
 
         let (r, g, b) = Self::get_pixel_rgb_from_slice(&self.blended_pixels, x, y, frame.width);
@@ -183,19 +185,20 @@ impl Renderer {
 
         let color_idx = self.calculate_color_index(r, g, b);
 
-        (ascii_char, color_idx)
+        (ascii_char, color_idx, (r, g, b))
     }
 
     fn write_to_terminal(&mut self, rows: &[String]) -> io::Result<()> {
         queue!(self.stdout, cursor::MoveTo(0, 0))?;
 
-        for (i, row) in rows.iter().enumerate() {
-            write!(self.stdout, "{}", row)?;
-
-            if i < self.term_height - 1 {
-                write!(self.stdout, "\r\n")?;
+        self.final_buffer.clear();
+        for (index, row) in rows.iter().enumerate() {
+            self.final_buffer.push_str(row);
+            if index < self.term_height - 1 {
+                self.final_buffer.push_str("\r\n");
             }
         }
+        write!(self.stdout, "{}", self.final_buffer)?;
 
         self.stdout.flush()?;
         Ok(())
@@ -256,6 +259,18 @@ impl Renderer {
             .min(frame_height - 1);
 
         (x, y)
+    }
+
+    fn get_color_code(&self, color_idx: usize, r: u8, g: u8, b: u8) -> String {
+        self.color_cache
+            .entry(color_idx)
+            .or_insert_with(|| {
+                let r_q = (r / self.quantization_divisor) * self.quantization_divisor;
+                let g_q = (g / self.quantization_divisor) * self.quantization_divisor;
+                let b_q = (b / self.quantization_divisor) * self.quantization_divisor;
+                format!("\x1b[38;2;{};{};{}m", r_q, g_q, b_q)
+            })
+            .clone()
     }
 
     fn get_pixel_rgb_from_slice(pixels: &[u8], x: usize, y: usize, width: usize) -> (u8, u8, u8) {
