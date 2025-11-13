@@ -2,9 +2,8 @@
 
 Real-time ASCII webcam renderer with edge detection
 
-<video autoplay loop muted playsinline>
-  <source src="https://github.com/user-attachments/assets/f8641be7-035a-441f-8267-c4e78c205de5" type="video/mp4">
-</video>
+## Demo
+https://github.com/user-attachments/assets/0b7924b0-cf55-426f-8c18-b6a13d6a36a7
 
 ## Features
 
